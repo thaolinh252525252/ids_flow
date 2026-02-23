@@ -13,10 +13,14 @@ def _get_first(flow: dict, *keys, default=None):
 
 def _extract_meta(flow: dict) -> dict:
     proto = _get_first(flow, "PROTOCOL", "protocol", default=None)
+
+    # IP: support CIC + live
     src_ip = _get_first(flow, "SRC_IP", "src_ip", "IPV4_SRC_ADDR", default=None)
     dst_ip = _get_first(flow, "DST_IP", "dst_ip", "IPV4_DST_ADDR", default=None)
-    src_port = _get_first(flow, "SRC_PORT", "src_port", default=None)
-    dst_port = _get_first(flow, "DST_PORT", "dst_port", default=None)
+
+    # PORT: support CIC + live
+    src_port = _get_first(flow, "SRC_PORT", "src_port", "L4_SRC_PORT", "sport", default=None)
+    dst_port = _get_first(flow, "DST_PORT", "dst_port", "L4_DST_PORT", "dport", default=None)
 
     in_pkts  = _get_first(flow, "IN_PKTS", "src2dst_packets", default=0)
     out_pkts = _get_first(flow, "OUT_PKTS", "dst2src_packets", default=0)
@@ -42,7 +46,6 @@ def _extract_meta(flow: dict) -> dict:
         "bytes": _to_float(in_bytes, 0.0) + _to_float(out_bytes, 0.0),
         "dur_ms": _to_float(dur_ms, None),
     }
-
 app = Flask(__name__)
 CORS(app)
 
