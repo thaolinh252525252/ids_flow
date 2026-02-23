@@ -9,9 +9,9 @@ datasets/
 
 # model artifacts (tuỳ bạn giữ hay không)
 # nếu model nhỏ và muốn push thì comment 2 dòng dưới
-artifacts/
-*.pt
-*.pkl
+# artifacts/
+# *.pt
+# *.pkl
 
 # node
 frontend/node_modules/

@@ -16,3 +16,8 @@ export async function setConfig(cfg) {
   const r = await axios.post("/api/config", cfg);
   return r.data;
 }
+
+export async function getFlows(limit = 1000) {
+  const r = await axios.get(`/api/flows?limit=${limit}`);
+  return r.data;
+}

@@ -1,6 +1,4 @@
-
-
-# tools/flow_csv_to_backend.py (ý tưởng chính)
+# tools/flow_csv_to_backend.py
 import argparse, time, requests, pandas as pd
 
 def main():
@@ -14,10 +12,20 @@ def main():
     args = ap.parse_args()
 
     df = pd.read_csv(args.csv, nrows=args.nrows)
+
+    # ---- DEBUG: xem cột có gì ----
+    print("cols=", df.columns.tolist()[:50])
+    GT_LABEL_COL = "Label" if "Label" in df.columns else None
+    GT_ATTACK_COL = "Attack" if "Attack" in df.columns else None
+    print("gt_attack_col=", GT_ATTACK_COL, "gt_label_col=", GT_LABEL_COL)
+    print("gt_attack_col=", GT_ATTACK_COL, "gt_label_col=", GT_LABEL_COL)
+
     # tách gt nếu có
-    gt_label = df["Label"].astype(int).tolist() if "Label" in df.columns else None
-    gt_attack = df["Attack"].astype(str).tolist() if "Attack" in df.columns else None
-    flow_df = df.drop(columns=[c for c in ["Label","Attack"] if c in df.columns])
+    gt_label = df[GT_LABEL_COL].astype(int).tolist() if GT_LABEL_COL else None
+    gt_attack = df[GT_ATTACK_COL].astype(str).tolist() if GT_ATTACK_COL else None
+
+    drop_cols = [c for c in ["Label", "Attack"] if c in df.columns]
+    flow_df = df.drop(columns=drop_cols)
 
     url = args.backend.rstrip("/") + args.endpoint
 
@@ -26,8 +34,18 @@ def main():
     for i in range(len(flow_df)):
         flow = flow_df.iloc[i].to_dict()
         it = {"flow": flow}
-        if gt_label is not None: it["gt_label"] = int(gt_label[i])
-        if gt_attack is not None: it["gt_attack"] = gt_attack[i]
+
+        if gt_label is not None:
+            it["gt_label"] = int(gt_label[i])
+        if gt_attack is not None:
+            it["gt_attack"] = gt_attack[i]
+
+        # ---- DEBUG: in sample vài dòng đầu ----
+        if i < 3:
+            print("sample gt_attack/gt_label=", it.get("gt_attack"), it.get("gt_label"))
+            # nếu muốn xem thêm 1 vài feature:
+            # print("sample flow keys=", list(flow.keys())[:15])
+
         items.append(it)
 
         if len(items) >= args.batch:

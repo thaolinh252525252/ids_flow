@@ -1,113 +1,184 @@
 import { DataGrid } from "@mui/x-data-grid";
 import { Box, Chip } from "@mui/material";
 
-function fmtTs(ts) {
-  if (ts == null) return "N/A";
-  const n = Number(ts);
-  if (!Number.isFinite(n) || n <= 0) return "N/A";
-  return new Date(n * 1000).toLocaleString();
+function protoName(proto) {
+  const n = Number(proto);
+  if (n === 6) return "TCP";
+  if (n === 17) return "UDP";
+  if (n === 1) return "ICMP";
+  return Number.isFinite(n) ? String(n) : "—";
 }
-function fmtNum(x, k = 4) {
-  if (x == null) return "—";
+
+function fmtAddr(ip, port) {
+  if (!ip) return "—";
+  if (port == null || port === "" || port === "—") return String(ip);
+  return `${ip}:${port}`;
+}
+
+function n0(x) {
   const n = Number(x);
-  if (!Number.isFinite(n)) return "—";
-  return n.toFixed(k);
+  return Number.isFinite(n) ? n : null;
+}
+
+function verdictColor(v) {
+  if (v === "attack") return "error";
+  if (v === "suspicious") return "warning";
+  if (v === "benign") return "success";
+  return "default";
+}
+
+function fmtTime(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  return new Date(n * 1000).toLocaleString();
 }
 
 export default function AlertsTable({ rows, onSelect }) {
-  const safeRows = Array.isArray(rows) ? rows : [];
+  const safeRows = Array.isArray(rows) ? rows.filter(Boolean) : [];
 
   const columns = [
     {
       field: "ts",
       headerName: "Time",
-      flex: 1.25,
-      sortable: false,
-      renderCell: (p) => fmtTs(p?.row?.ts),
+      width: 170,
+      // ✅ valueGetter phải an toàn
+      valueGetter: (p) => p?.row?.ts ?? null,
+      renderCell: (p) => fmtTime(p?.row?.ts),
+      sortable: true,
     },
     {
       field: "verdict",
       headerName: "Verdict",
-      flex: 0.8,
+      width: 120,
+      sortable: true,
       renderCell: (p) => {
-        const v = p?.row?.verdict;
-        if (v === "attack")
-          return <Chip color="error" label="attack" size="small" />;
-        if (v === "suspicious")
-          return <Chip color="warning" label="suspicious" size="small" />;
-        return <Chip label={v || "unknown"} size="small" />;
+        const v = p?.row?.verdict ?? "unknown";
+        return (
+          <Chip
+            size="small"
+            label={v}
+            color={verdictColor(v)}
+            variant="outlined"
+          />
+        );
       },
     },
-    { field: "stage", headerName: "Stage", flex: 0.7 },
     {
-      field: "p_attack",
-      headerName: "p_attack",
-      flex: 0.8,
+      field: "proto",
+      headerName: "Proto",
+      width: 80,
+      valueGetter: (p) => p?.row?.meta?.proto ?? null,
+      renderCell: (p) => protoName(p?.row?.meta?.proto),
       sortable: false,
-      renderCell: (p) => fmtNum(p?.row?.p_attack, 4),
     },
     {
-      field: "rule",
-      headerName: "Rule",
-      flex: 1.0,
+      field: "src",
+      headerName: "Source",
+      flex: 1,
+      minWidth: 180,
       sortable: false,
-      valueGetter: (p) => p?.row?.rule_info?.rule ?? null,
-      renderCell: (p) => p?.row?.rule_info?.rule ?? "—",
-    },
-    {
-      field: "rule_severity",
-      headerName: "Severity",
-      flex: 0.7,
-      sortable: false,
-      valueGetter: (p) => p?.row?.rule_info?.severity ?? null,
       renderCell: (p) => {
-        const s = p?.row?.rule_info?.severity;
-        if (!s) return "—";
-        if (s === "high")
-          return <Chip color="error" label="high" size="small" />;
-        if (s === "medium")
-          return <Chip color="warning" label="medium" size="small" />;
-        return <Chip label={String(s)} size="small" />;
+        const m = p?.row?.meta || {};
+        return (
+          <span style={{ fontFamily: "monospace" }}>
+            {fmtAddr(m.src_ip, m.src_port)}
+          </span>
+        );
+      },
+    },
+    {
+      field: "dst",
+      headerName: "Destination",
+      flex: 1,
+      minWidth: 180,
+      sortable: false,
+      renderCell: (p) => {
+        const m = p?.row?.meta || {};
+        return (
+          <span style={{ fontFamily: "monospace" }}>
+            {fmtAddr(m.dst_ip, m.dst_port)}
+          </span>
+        );
+      },
+    },
+    {
+      field: "pkts",
+      headerName: "Pkts",
+      width: 90,
+      align: "right",
+      headerAlign: "right",
+      valueGetter: (p) => n0(p?.row?.meta?.pkts),
+      sortable: false,
+    },
+    {
+      field: "bytes",
+      headerName: "Bytes",
+      width: 110,
+      align: "right",
+      headerAlign: "right",
+      valueGetter: (p) => n0(p?.row?.meta?.bytes),
+      sortable: false,
+    },
+    {
+      field: "dur_ms",
+      headerName: "Dur(ms)",
+      width: 110,
+      align: "right",
+      headerAlign: "right",
+      valueGetter: (p) => n0(p?.row?.meta?.dur_ms),
+      sortable: false,
+    },
+    { field: "stage", headerName: "Stage", width: 90, sortable: true },
+
+    {
+      field: "decision",
+      headerName: "Decision",
+      flex: 1.2,
+      minWidth: 220,
+      sortable: false,
+      renderCell: (p) => {
+        const r = p?.row;
+        if (!r) return "—";
+
+        if (r.stage === "rule" && r.rule_info) {
+          const sev = r.rule_info.severity ? ` (${r.rule_info.severity})` : "";
+          const nm = r.rule_info.rule ?? r.rule_info.name ?? "rule";
+          return `${nm}${sev}`;
+        }
+        if (typeof r.p_attack === "number")
+          return `ML p=${r.p_attack.toFixed(4)}`;
+        if (r.family) return `Family: ${r.family}`;
+        return "—";
       },
     },
 
     {
-      field: "family",
-      headerName: "Family",
-      flex: 0.9,
-      sortable: false,
-      renderCell: (p) => p?.row?.family ?? "—",
-    },
-    {
-      field: "family_conf",
-      headerName: "FamConf",
-      flex: 0.8,
-      sortable: false,
-      renderCell: (p) => fmtNum(p?.row?.family_conf, 3),
-    },
-    {
-      field: "gt_attack",
-      headerName: "GT (replay)",
-      flex: 1.2,
+      field: "gt",
+      headerName: "GT",
+      width: 110,
       sortable: false,
       renderCell: (p) => p?.row?.gt_attack ?? "—",
     },
   ];
 
   return (
-    <Box sx={{ height: 600, width: "100%" }}>
+    <Box sx={{ height: 640, width: "100%" }}>
       <DataGrid
         rows={safeRows}
         columns={columns}
+        // ✅ getRowId phải handle thiếu field
         getRowId={(r) =>
-          `${r.ts ?? 0}-${r.stage ?? "x"}-${r.verdict ?? "x"}-${r.gt_attack ?? ""}`
+          r?.id ??
+          `${r?.ts ?? 0}-${r?.meta?.src_ip ?? "x"}-${r?.meta?.dst_ip ?? "x"}-${
+            r?.meta?.src_port ?? "x"
+          }-${r?.meta?.dst_port ?? "x"}-${r?.stage ?? "x"}-${r?.verdict ?? "x"}`
         }
         pageSizeOptions={[25, 50, 100]}
         initialState={{
           pagination: { paginationModel: { pageSize: 50, page: 0 } },
         }}
         disableRowSelectionOnClick
-        onRowClick={(p) => onSelect?.(p.row)}
+        onRowClick={(p) => onSelect?.(p?.row)}
       />
     </Box>
   );

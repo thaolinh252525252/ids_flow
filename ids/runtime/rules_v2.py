@@ -69,8 +69,9 @@ def run_rules(flow: Dict[str, Any]) -> Optional[RuleHit]:
             name="DNS_TTL_ANOMALY",
             severity="medium",
             score=0.55,
-            reason=f"dns_id={dns_id} qtype={dns_qtype} ttl={dns_ttl} pkts={pkts:.0f}"
-    )
+            reason=f"dns_id={dns_id} qtype={dns_qtype} ttl={dns_ttl} pkts={pkts:.0f}",
+        )
+
 
     # =========================
     # HIGH confidence

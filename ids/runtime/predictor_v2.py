@@ -132,62 +132,99 @@ class IDSRuntimeV2:
     ###################################
     @torch.no_grad()
     def predict_flow(self, flow: dict) -> dict:
+        # -------- Rule (always run) --------
         hit = run_rules(flow)
-
-        rule_info = None
+        rule_result = None
         if hit is not None:
-            rule_info = {
-                "rule": hit.name,
+            rule_result = {
+                "hit": True,
+                "name": hit.name,
                 "severity": hit.severity,
                 "score": float(hit.score),
                 "reason": hit.reason,
             }
+        else:
+            rule_result = {"hit": False}
 
-        # High-confidence rule: chặn luôn
-        if hit is not None and hit.severity == "high":
-            return {
-                "p_attack": None,
-                "stage": "rule",
-                "verdict": "attack",
-                "family": None,
-                "family_conf": None,
-                "rule_info": rule_info,   # <-- QUAN TRỌNG
-            }
-
-        # Binary
+        # -------- ML Binary (always run) --------
         xb = self._vectorize(flow, self.bin_feats).reshape(1, -1)
         xb = self.scb.transform(xb).astype(np.float32, copy=False)
         tb = torch.from_numpy(xb).to(self.device)
-        p_attack = torch.sigmoid(self.mb(tb)).item()
-
-        out = {
-            "p_attack": float(p_attack),
-            "stage": "binary",
-            "verdict": None,
-            "family": None,
-            "family_conf": None,
-            "rule_info": rule_info,      # <-- attach cả medium/none
-        }
+        p_attack = float(torch.sigmoid(self.mb(tb)).item())
 
         if p_attack < self.tau_low:
-            out["verdict"] = "benign"
-            return out
+            ml_verdict = "benign"
+        elif p_attack < self.tau_high:
+            ml_verdict = "suspicious"
+        else:
+            ml_verdict = "attack"
 
-        if p_attack <= self.tau_high:
-            out["verdict"] = "suspicious"
-            return out
+        ml_binary = {
+            "p_attack": p_attack,
+            "verdict": ml_verdict,
+            "tau_low": float(self.tau_low),
+            "tau_high": float(self.tau_high),
+        }
 
-        # Family
-        xf = self._vectorize(flow, self.fam_feats).reshape(1, -1)
-        xf = self.scf.transform(xf).astype(np.float32, copy=False)
-        tf = torch.from_numpy(xf).to(self.device)
-        probs = torch.softmax(self.mf(tf), dim=1).cpu().numpy()[0]
-        idx = int(probs.argmax())
+        # -------- ML Family (only if attack) --------
+        family_name, family_conf = None, None
+        if ml_verdict == "attack":
+            xf = self._vectorize(flow, self.fam_feats).reshape(1, -1)
+            xf = self.scf.transform(xf).astype(np.float32, copy=False)
+            tf = torch.from_numpy(xf).to(self.device)
+            probs = torch.softmax(self.mf(tf), dim=1).cpu().numpy()[0]
+            idx = int(probs.argmax())
+            family_name = str(self.le.inverse_transform([idx])[0])
+            family_conf = float(probs[idx])
 
-        out["stage"] = "family"
-        out["verdict"] = "attack"
-        out["family"] = str(self.le.inverse_transform([idx])[0])
-        out["family_conf"] = float(probs[idx])
+        ml_family = {"name": family_name, "conf": family_conf}
+
+        # -------- Final decision (combine) --------
+        # High rule = strong override to attack
+        rule_high = (hit is not None and hit.severity == "high")
+        rule_any = (hit is not None)
+
+        if rule_high:
+            final_verdict = "attack"
+            final_source = "both" if ml_verdict == "attack" else "rule-only"
+            final_stage = "rule"
+        else:
+            if rule_any and ml_verdict in ("suspicious", "attack"):
+                final_verdict = ml_verdict
+                final_source = "both"
+                final_stage = "family" if (ml_verdict == "attack" and family_name is not None) else "binary"
+            elif rule_any:
+                # medium rule only -> suspicious (dễ giải thích demo)
+                final_verdict = "suspicious" if hit.severity == "medium" else "suspicious"
+                final_source = "rule-only"
+                final_stage = "rule"
+            else:
+                final_verdict = ml_verdict
+                final_source = "ml-only" if ml_verdict != "benign" else "none"
+                final_stage = "family" if (ml_verdict == "attack" and family_name is not None) else "binary"
+
+        # -------- Backward-compatible output fields (UI/charts cũ vẫn chạy) --------
+        out = {
+            # legacy fields
+            "p_attack": p_attack,
+            "stage": final_stage,
+            "verdict": final_verdict,
+            "family": family_name if final_verdict == "attack" else None,
+            "family_conf": family_conf if final_verdict == "attack" else None,
+
+            # keep your old rule_info shape too (so existing UI doesn’t break)
+            "rule_info": None if hit is None else {
+                "rule": hit.name,
+                "severity": hit.severity,
+                "score": float(hit.score),
+                "reason": hit.reason,
+            },
+
+            # NEW: separated signals (Policy 1)
+            "rule_result": rule_result,
+            "ml_binary": ml_binary,
+            "ml_family": ml_family,
+            "final_source": final_source,
+            "ml_verdict": ml_verdict,  # convenient for UI
+        }
         return out
-
-    
