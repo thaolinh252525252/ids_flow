@@ -4,8 +4,8 @@ __pycache__/
 
 # datasets / raw data (too large)
 data/
-datasets/
-*.npy
+datasets/*
+!datasets/v2/family/label_encoder.pkl
 
 # model artifacts (tuỳ bạn giữ hay không)
 # nếu model nhỏ và muốn push thì comment 2 dòng dưới
