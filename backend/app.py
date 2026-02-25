@@ -76,7 +76,29 @@ def ingest_event():
 @app.get("/api/attacks")
 def get_attacks():
     limit = int(request.args.get("limit", 200))
-    return jsonify(STORE.get_events(limit=limit))
+    verdict = request.args.get("verdict", "").strip().lower()
+
+    def ffloat(name):
+        v = request.args.get(name, "")
+        if not v:
+            return None
+        try:
+            return float(v)
+        except:
+            return None
+
+    since = ffloat("since")
+    until = ffloat("until")
+    src_ip = request.args.get("src_ip", "").strip() or None
+    dst_ip = request.args.get("dst_ip", "").strip() or None
+    q = request.args.get("q", "")
+
+    return jsonify(STORE.get_events(
+        limit=limit, verdict=verdict,
+        since=since, until=until,
+        src_ip=src_ip, dst_ip=dst_ip,
+        q=q
+    ))
 
 @app.get("/api/stats")
 def get_stats():
@@ -86,7 +108,28 @@ def get_stats():
 def get_flows():
     limit = int(request.args.get("limit", 500))
     verdict = request.args.get("verdict", "").strip().lower()
-    return jsonify(STORE.get_flows(limit=limit, verdict=verdict))
+
+    def ffloat(name):
+        v = request.args.get(name, None)
+        if v is None or v == "": 
+            return None
+        try:
+            return float(v)
+        except:
+            return None
+
+    since = ffloat("since")
+    until = ffloat("until")
+    src_ip = request.args.get("src_ip", "").strip() or None
+    dst_ip = request.args.get("dst_ip", "").strip() or None
+    q = request.args.get("q", "")
+
+    return jsonify(STORE.get_flows(
+        limit=limit, verdict=verdict,
+        since=since, until=until,
+        src_ip=src_ip, dst_ip=dst_ip,
+        q=q
+    ))
 
 # =========================
 # NEW: ingest raw flow -> predict -> store

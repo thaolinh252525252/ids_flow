@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { getAttacks, getConfig, getFlows, getStats, setConfig } from "../api";
+
 import {
   Box,
   Button,
@@ -21,6 +22,7 @@ import {
   Tooltip,
   TableContainer,
 } from "@mui/material";
+
 import StatCards from "../components/StatCards";
 
 import {
@@ -29,7 +31,12 @@ import {
   SuspiciousDistribution,
   TopFamiliesChart,
   TopSuspiciousTable,
+  TopTargetsChart,
+  TopSourcesChart,
+  ProtocolDistribution,
 } from "../components/Charts";
+
+/* -------- helpers -------- */
 
 function safeNum(x, d = null) {
   const n = Number(x);
@@ -62,31 +69,32 @@ function verdictColor(v) {
   if (v === "benign") return "success";
   return "default";
 }
-// function safeNum(x, d = null) {
-//   const n = Number(x);
-//   return Number.isFinite(n) ? n : d;
-// }
-// function fmtTs(ts) {
-//   const n = safeNum(ts, 0);
-//   if (!n) return "N/A";
-//   return new Date(n * 1000).toLocaleString();
-// }
-function pillColor(verdict) {
-  if (verdict === "attack") return "error";
-  if (verdict === "suspicious") return "warning";
-  if (verdict === "benign") return "success";
-  return "default";
+
+function rangeToSince(range) {
+  const now = Date.now() / 1000;
+  if (range === "5m") return now - 5 * 60;
+  if (range === "15m") return now - 15 * 60;
+  if (range === "1h") return now - 60 * 60;
+  if (range === "24h") return now - 24 * 60 * 60;
+  return null; // "all"
 }
+
+/* -------- table -------- */
 
 function FlowsTable({
   rows,
-  height = 780,
-  search,
-  onSearch,
+  height = 760,
   paused,
   onPaused,
   limit,
   onLimit,
+  // flow filters:
+  srcIp,
+  setSrcIp,
+  dstIp,
+  setDstIp,
+  qText,
+  setQText,
 }) {
   return (
     <Card sx={{ height }}>
@@ -100,16 +108,10 @@ function FlowsTable({
           sx={{ mb: 1 }}
         >
           <Typography variant="h6" sx={{ fontWeight: 900 }}>
-            All flows (realtime)
+            Flows (filtered)
           </Typography>
+
           <Stack direction="row" spacing={1} alignItems="center">
-            <TextField
-              size="small"
-              placeholder="search: verdict / stage / family"
-              value={search}
-              onChange={(e) => onSearch(e.target.value)}
-              sx={{ width: 260 }}
-            />
             <TextField
               size="small"
               label="limit"
@@ -129,6 +131,34 @@ function FlowsTable({
               label="Pause"
             />
           </Stack>
+        </Stack>
+
+        {/* ✅ flow filters placed here (less confusing) */}
+        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", mb: 1.5 }}>
+          <TextField
+            size="small"
+            label="src_ip (contains)"
+            value={srcIp}
+            onChange={(e) => setSrcIp(e.target.value)}
+            sx={{ width: 180 }}
+            placeholder="vd: 172.31."
+          />
+          <TextField
+            size="small"
+            label="dst_ip (contains)"
+            value={dstIp}
+            onChange={(e) => setDstIp(e.target.value)}
+            sx={{ width: 180 }}
+            placeholder="vd: 172.31."
+          />
+          <TextField
+            size="small"
+            label="search (q)"
+            value={qText}
+            onChange={(e) => setQText(e.target.value)}
+            sx={{ width: 340 }}
+            placeholder="vd: udp / :53 / ddos / 172.31.0.2:53"
+          />
         </Stack>
 
         <Divider sx={{ mb: 1.5 }} />
@@ -163,7 +193,7 @@ function FlowsTable({
             </TableHead>
 
             <TableBody>
-              {rows.map((r, idx) => {
+              {(rows || []).map((r, idx) => {
                 const m = r?.meta || {};
                 const v = String(r?.verdict ?? "unknown");
                 const stage = String(r?.stage ?? "—");
@@ -179,13 +209,12 @@ function FlowsTable({
                 const fam = r?.family ?? "—";
                 const famConf = safeNum(r?.family_conf, null);
 
-                // rule name (tuỳ backend bạn attach)
                 const ruleName =
                   r?.rule_name ??
                   r?.rule?.name ??
                   (typeof r?.rule_info === "string"
                     ? r.rule_info
-                    : r?.rule_info?.name);
+                    : (r?.rule_info?.rule ?? r?.rule_info?.name));
 
                 return (
                   <TableRow key={idx} hover>
@@ -262,13 +291,13 @@ function FlowsTable({
                 );
               })}
 
-              {rows.length === 0 && (
+              {(!rows || rows.length === 0) && (
                 <TableRow>
                   <TableCell
                     colSpan={12}
                     sx={{ py: 4, textAlign: "center", color: "text.secondary" }}
                   >
-                    No flows yet. Start collector + generate traffic.
+                    No flows match current filters.
                   </TableCell>
                 </TableRow>
               )}
@@ -277,31 +306,54 @@ function FlowsTable({
         </TableContainer>
 
         <Typography variant="caption" sx={{ mt: 1, color: "text.secondary" }}>
-          Showing newest first. Backend keeps up to max_flows (deque maxlen), UI
-          only fetches “limit” rows.
+          Backend keeps up to max_flows (deque). UI fetches “limit” newest rows.
         </Typography>
       </CardContent>
     </Card>
   );
 }
 
+/* -------- page -------- */
+
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [cfg, setCfg] = useState(null);
-  const [attacks, setAttacks] = useState([]);
+
   const [flows, setFlows] = useState([]);
+  const [attacks, setAttacks] = useState([]);
 
   const [paused, setPaused] = useState(false);
-  const [search, setSearch] = useState("");
   const [flowLimit, setFlowLimit] = useState(1000);
 
+  // global filters (less confusing)
+  const [verdictF, setVerdictF] = useState(""); // ""=all
+  const [range, setRange] = useState("15m");
+
+  // flow filters (placed inside flow table card)
+  const [srcIp, setSrcIp] = useState("");
+  const [dstIp, setDstIp] = useState("");
+  const [qText, setQText] = useState("");
+
   async function refresh() {
+    const since = rangeToSince(range);
+
+    const params = {
+      verdict: verdictF || "",
+      since,
+      src_ip: srcIp.trim() || "",
+      dst_ip: dstIp.trim() || "",
+      q: qText.trim() || "",
+    };
+
     const [s, c, a, f] = await Promise.all([
       getStats(),
       getConfig(),
-      getAttacks(5000),
-      getFlows(flowLimit),
+      // alerts feed (events): mostly suspicious/attack/rule
+      getAttacks(5000, params),
+      // flows feed (all)
+      getFlows(flowLimit, params),
     ]);
+
     setStats(s);
     setCfg(c);
     setAttacks(Array.isArray(a) ? a : []);
@@ -315,17 +367,7 @@ export default function Dashboard() {
     }, 1200);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paused, flowLimit]);
-
-  const filteredFlows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return flows;
-    return flows.filter((r) => {
-      const s =
-        `${r?.verdict ?? ""} ${r?.stage ?? ""} ${r?.family ?? ""}`.toLowerCase();
-      return s.includes(q);
-    });
-  }, [flows, search]);
+  }, [paused, flowLimit, verdictF, range, srcIp, dstIp, qText]);
 
   if (!stats || !cfg) return <Typography>Loading...</Typography>;
 
@@ -338,146 +380,231 @@ export default function Dashboard() {
     <Box sx={{ pb: 3 }}>
       <StatCards counts={counts} queueLen={stats.queue_len} last={last} />
 
-      {/* MAIN LAYOUT: left table, right charts */}
-      <Grid container spacing={2} sx={{ mt: 0.5 }} alignItems="stretch">
-        {/* LEFT: FLOWS TABLE */}
-        <Grid item xs={12} lg={5}>
+      {/* ✅ global filters only (verdict + time) */}
+      <Box
+        sx={{
+          mt: 1,
+          display: "flex",
+          gap: 1,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
+          {["", "benign", "suspicious", "attack"].map((v) => (
+            <Chip
+              key={v || "all"}
+              label={v || "all"}
+              variant={verdictF === v ? "filled" : "outlined"}
+              onClick={() => setVerdictF(v)}
+            />
+          ))}
+        </Stack>
+
+        <TextField
+          size="small"
+          label="time"
+          select
+          SelectProps={{ native: true }}
+          value={range}
+          onChange={(e) => setRange(e.target.value)}
+          sx={{ width: 130 }}
+        >
+          <option value="15m">last 15m</option>
+          <option value="5m">last 5m</option>
+          <option value="1h">last 1h</option>
+          <option value="24h">last 24h</option>
+          <option value="all">all</option>
+        </TextField>
+      </Box>
+
+      {/* Wazuh-like layout */}
+      <Grid container spacing={2} sx={{ mt: 1 }} alignItems="stretch">
+        {/* Row 1: Timeline big + Verdict donut */}
+        <Grid item xs={12} lg={8}>
+          <Card sx={{ height: 360 }}>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontWeight: 900, mb: 1 }}>
+                Alerts timeline (per minute)
+              </Typography>
+              <Box sx={{ height: 290 }}>
+                {/* showBenign=false => avoid confusion (events mostly not benign) */}
+                <AlertsPerMinute
+                  rows={attacks}
+                  height={290}
+                  showBenign={false}
+                />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} lg={4}>
+          <Card sx={{ height: 360 }}>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontWeight: 900, mb: 1 }}>
+                Verdict distribution
+              </Typography>
+              <Box sx={{ height: 290 }}>
+                <SuspiciousDistribution rows={attacks} height={290} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Row 2: Top talkers side-by-side (k=8, tick fixed) */}
+        <Grid item xs={12} lg={6}>
+          <Card sx={{ height: 360 }}>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontWeight: 900, mb: 1 }}>
+                Top targets (dst_ip:port)
+              </Typography>
+              <Box sx={{ height: 290 }}>
+                <TopTargetsChart rows={attacks} k={8} height={290} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} lg={6}>
+          <Card sx={{ height: 360 }}>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontWeight: 900, mb: 1 }}>
+                Top sources (src_ip)
+              </Typography>
+              <Box sx={{ height: 290 }}>
+                <TopSourcesChart rows={attacks} k={8} height={290} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Row 3: Stage + Protocol + Families */}
+        <Grid item xs={12} md={4}>
+          <Card sx={{ height: 340 }}>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontWeight: 900, mb: 1 }}>
+                Stage breakdown
+              </Typography>
+              <Box sx={{ height: 260 }}>
+                {/* ✅ use flows to show binary correctly */}
+                <StageSeverityBreakdown rows={flows} height={260} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} md={4}>
+          <Card sx={{ height: 340 }}>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontWeight: 900, mb: 1 }}>
+                Protocol distribution
+              </Typography>
+              <Box sx={{ height: 260 }}>
+                <ProtocolDistribution rows={attacks} height={260} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} md={4}>
+          <Card sx={{ height: 340 }}>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontWeight: 900, mb: 1 }}>
+                Top families (attack)
+              </Typography>
+              <Box sx={{ height: 260 }}>
+                <TopFamiliesChart rows={attacks} k={8} height={260} />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Row 4: Recent alerts */}
+        <Grid item xs={12}>
+          <TopSuspiciousTable rows={attacks} limit={15} />
+        </Grid>
+
+        {/* Row 5: Flows table + flow filters inside */}
+        <Grid item xs={12}>
           <FlowsTable
-            rows={filteredFlows}
-            height={780}
-            search={search}
-            onSearch={setSearch}
+            rows={flows}
+            height={760}
             paused={paused}
             onPaused={setPaused}
             limit={flowLimit}
             onLimit={setFlowLimit}
+            srcIp={srcIp}
+            setSrcIp={setSrcIp}
+            dstIp={dstIp}
+            setDstIp={setDstIp}
+            qText={qText}
+            setQText={setQText}
           />
         </Grid>
 
-        {/* RIGHT: CHARTS */}
-        <Grid item xs={12} lg={7}>
-          <Grid container spacing={2} alignItems="stretch">
-            <Grid item xs={12} md={6}>
-              <Card sx={{ height: 380 }}>
-                <CardContent>
-                  <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
-                    Alerts per minute
-                  </Typography>
-                  <Box sx={{ height: 300 }}>
-                    <AlertsPerMinute rows={attacks} height={300} />
-                  </Box>
-                </CardContent>
-              </Card>
-            </Grid>
-
-            <Grid item xs={12} md={6}>
-              <Card sx={{ height: 380 }}>
-                <CardContent>
-                  <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
-                    Stage × severity
-                  </Typography>
-                  <Box sx={{ height: 300 }}>
-                    <StageSeverityBreakdown rows={attacks} height={300} />
-                  </Box>
-                </CardContent>
-              </Card>
-            </Grid>
-
-            <Grid item xs={12} md={6}>
-              <Card sx={{ height: 380 }}>
-                <CardContent>
-                  <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
-                    Suspicious distribution
-                  </Typography>
-                  <Box sx={{ height: 300 }}>
-                    <SuspiciousDistribution rows={attacks} height={300} />
-                  </Box>
-                </CardContent>
-              </Card>
-            </Grid>
-
-            <Grid item xs={12} md={6}>
-              <Card sx={{ height: 380 }}>
-                <CardContent>
-                  <Typography variant="h6" sx={{ fontWeight: 800, mb: 1 }}>
-                    Top families
-                  </Typography>
-                  <Box sx={{ height: 300 }}>
-                    <TopFamiliesChart rows={attacks} k={8} height={300} />
-                  </Box>
-                </CardContent>
-              </Card>
-            </Grid>
-
-            {/* Top suspicious table */}
-            <Grid item xs={12}>
-              <TopSuspiciousTable rows={attacks} limit={15} />
-            </Grid>
-
-            {/* Runtime config */}
-            <Grid item xs={12}>
-              <Card>
-                <CardContent>
-                  <Typography variant="h6" sx={{ fontWeight: 800 }}>
-                    Runtime Config
-                  </Typography>
-                  <Divider sx={{ my: 1.5 }} />
-                  <Grid container spacing={2} alignItems="center">
-                    <Grid item>
-                      <TextField
-                        size="small"
-                        label="tau_low"
-                        type="number"
-                        inputProps={{ step: 0.01 }}
-                        value={cfg.tau_low}
+        {/* Runtime Config */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" sx={{ fontWeight: 900 }}>
+                Runtime Config
+              </Typography>
+              <Divider sx={{ my: 1.5 }} />
+              <Grid container spacing={2} alignItems="center">
+                <Grid item>
+                  <TextField
+                    size="small"
+                    label="tau_low"
+                    type="number"
+                    inputProps={{ step: 0.01 }}
+                    value={cfg.tau_low}
+                    onChange={(e) =>
+                      setCfg({ ...cfg, tau_low: Number(e.target.value) })
+                    }
+                  />
+                </Grid>
+                <Grid item>
+                  <TextField
+                    size="small"
+                    label="tau_high"
+                    type="number"
+                    inputProps={{ step: 0.01 }}
+                    value={cfg.tau_high}
+                    onChange={(e) =>
+                      setCfg({ ...cfg, tau_high: Number(e.target.value) })
+                    }
+                  />
+                </Grid>
+                <Grid item>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={!!cfg.enable_rules}
                         onChange={(e) =>
-                          setCfg({ ...cfg, tau_low: Number(e.target.value) })
+                          setCfg({ ...cfg, enable_rules: e.target.checked })
                         }
                       />
-                    </Grid>
-                    <Grid item>
-                      <TextField
-                        size="small"
-                        label="tau_high"
-                        type="number"
-                        inputProps={{ step: 0.01 }}
-                        value={cfg.tau_high}
-                        onChange={(e) =>
-                          setCfg({ ...cfg, tau_high: Number(e.target.value) })
-                        }
-                      />
-                    </Grid>
-                    <Grid item>
-                      <FormControlLabel
-                        control={
-                          <Switch
-                            checked={!!cfg.enable_rules}
-                            onChange={(e) =>
-                              setCfg({ ...cfg, enable_rules: e.target.checked })
-                            }
-                          />
-                        }
-                        label="enable_rules"
-                      />
-                    </Grid>
-                    <Grid item>
-                      <Button
-                        variant="contained"
-                        onClick={async () => setCfg(await setConfig(cfg))}
-                      >
-                        Save
-                      </Button>
-                    </Grid>
-                    <Grid item>
-                      <Button variant="outlined" onClick={refresh}>
-                        Refresh
-                      </Button>
-                    </Grid>
-                  </Grid>
-                </CardContent>
-              </Card>
-            </Grid>
-          </Grid>
+                    }
+                    label="enable_rules"
+                  />
+                </Grid>
+                <Grid item>
+                  <Button
+                    variant="contained"
+                    onClick={async () => setCfg(await setConfig(cfg))}
+                  >
+                    Save
+                  </Button>
+                </Grid>
+                <Grid item>
+                  <Button variant="outlined" onClick={refresh}>
+                    Refresh
+                  </Button>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
         </Grid>
       </Grid>
     </Box>
